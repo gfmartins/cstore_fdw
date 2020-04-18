@@ -106,7 +106,6 @@ static void CreateDirectory(StringInfo directoryName);
 static void RemoveCStoreDatabaseDirectory(Oid databaseOid);
 static StringInfo OptionNamesString(Oid currentContextId);
 static HeapTuple GetSlotHeapTuple(TupleTableSlot *tts);
-static CStoreFdwOptions * CStoreGetOptions(Oid foreignTableId);
 static char * CStoreGetOptionValue(Oid foreignTableId, const char *optionName);
 static void ValidateForeignTableOptions(char *filename, char *compressionTypeString,
 										char *stripeRowCountString,
@@ -1358,7 +1357,7 @@ GetSlotHeapTuple(TupleTableSlot *tts)
  * foreign table, and if not present, falls back to default values. This function
  * errors out if given option values are considered invalid.
  */
-static CStoreFdwOptions *
+extern CStoreFdwOptions *
 CStoreGetOptions(Oid foreignTableId)
 {
 	CStoreFdwOptions *cstoreFdwOptions = NULL;

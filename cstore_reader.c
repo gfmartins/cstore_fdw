@@ -68,7 +68,7 @@ static bool * SelectedBlockMask(StripeSkipList *stripeSkipList,
 static List * BuildRestrictInfoList(List *whereClauseList);
 static Node * BuildBaseConstraint(Var *variable);
 static OpExpr * MakeOpExpression(Var *variable, int16 strategyNumber);
-static Oid GetOperatorByType(Oid typeId, Oid accessMethodId, int16 strategyNumber);
+static Oid GetOperatorOrProcByType(Oid typeId, Oid accessMethodId, int16 strategyOrProc, bool proc);
 static void UpdateConstraint(Node *baseConstraint, Datum minValue, Datum maxValue);
 static StripeSkipList * SelectedBlockSkipList(StripeSkipList *stripeSkipList,
 		 	 	 	 	 	 	 	 	 	  bool *projectedColumnMask,
@@ -817,24 +817,8 @@ FmgrInfo *
 GetFunctionInfoOrNull(Oid typeId, Oid accessMethodId, int16 procedureId)
 {
 	FmgrInfo *functionInfo = NULL;
-	Oid operatorClassId = InvalidOid;
-	Oid operatorFamilyId = InvalidOid;
-	Oid operatorId = InvalidOid;
+	Oid operatorId = GetOperatorOrProcByType(typeId, accessMethodId, procedureId, true);
 
-	/* get default operator class from pg_opclass for datum type */
-	operatorClassId = GetDefaultOpClass(typeId, accessMethodId);
-	if (operatorClassId == InvalidOid)
-	{
-		return NULL;
-	}
-
-	operatorFamilyId = get_opclass_family(operatorClassId);
-	if (operatorFamilyId == InvalidOid)
-	{
-		return NULL;
-	}
-
-	operatorId = get_opfamily_proc(operatorFamilyId, typeId, typeId, procedureId);
 	if (operatorId != InvalidOid)
 	{
 		functionInfo = (FmgrInfo *) palloc0(sizeof(FmgrInfo));
@@ -912,7 +896,7 @@ MakeOpExpression(Var *variable, int16 strategyNumber)
 	OpExpr *expression = NULL;
 
 	/* Load the operator from system catalogs */
-	operatorId = GetOperatorByType(typeId, accessMethodId, strategyNumber);
+	operatorId = GetOperatorOrProcByType(typeId, accessMethodId, strategyNumber, false);
 
 	constantValue = makeNullConst(typeId, typeModId, collationId);
 
@@ -933,23 +917,36 @@ MakeOpExpression(Var *variable, int16 strategyNumber)
 
 
 /*
- * GetOperatorByType returns operator Oid for the given type, access method,
- * and strategy number. Note that this function incorrectly errors out when
- * the given type doesn't have its own operator but can use another compatible
- * type's default operator. The function is copied from CitusDB's shard pruning
- * logic.
+ * GetOperatorByType returns operator/procedure Oid for the given type, access method,
+ * and strategy number, taking into account the ability to use a different type's comparator.
  */
 static Oid
-GetOperatorByType(Oid typeId, Oid accessMethodId, int16 strategyNumber)
+GetOperatorOrProcByType(Oid typeId, Oid accessMethodId, int16 strategyOrProc, bool proc)
 {
+	Oid operatorTypeId;
+	Oid operatorClassId;
+	Oid operatorFamilyId;
+
 	/* Get default operator class from pg_opclass */
-	Oid operatorClassId = GetDefaultOpClass(typeId, accessMethodId);
+	operatorClassId = GetDefaultOpClass(typeId, accessMethodId);
+	if (operatorClassId == InvalidOid)
+	{
+		return InvalidOid;
+	}
 
-	Oid operatorFamily = get_opclass_family(operatorClassId);
+	if (!get_opclass_opfamily_and_input_type(operatorClassId, &operatorFamilyId, &operatorTypeId))
+	{
+		return InvalidOid;
+	}
 
-	Oid operatorId = get_opfamily_member(operatorFamily, typeId, typeId, strategyNumber);
-
-	return operatorId;
+	if (proc)
+	{
+		return get_opfamily_proc(operatorFamilyId, operatorTypeId, operatorTypeId, strategyOrProc);
+	}
+	else
+	{
+		return get_opfamily_member(operatorFamilyId, operatorTypeId, operatorTypeId, strategyOrProc);
+	}
 }
 
 

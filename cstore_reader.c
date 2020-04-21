@@ -65,6 +65,8 @@ static StripeSkipList * LoadStripeSkipList(FILE *tableFile,
 										   TupleDesc tupleDescriptor);
 static bool * SelectedBlockMask(StripeSkipList *stripeSkipList,
 								List *projectedColumnList, List *whereClauseList);
+static Node * drop_relabel_type_mutator(Node *node, void *context);
+static List * PrepareWhereClauseList(List *whereClauseList);
 static List * BuildRestrictInfoList(List *whereClauseList);
 static Node * BuildBaseConstraint(Var *variable);
 static OpExpr * MakeOpExpression(Var *variable, int16 strategyNumber);
@@ -143,7 +145,7 @@ CStoreBeginRead(const char *filename, TupleDesc tupleDescriptor,
 	readState->tableFile = tableFile;
 	readState->tableFooter = tableFooter;
 	readState->projectedColumnList = projectedColumnList;
-	readState->whereClauseList = whereClauseList;
+	readState->whereClauseList = PrepareWhereClauseList(whereClauseList);
 	readState->stripeBuffers = NULL;
 	readState->readStripeCount = 0;
 	readState->stripeReadRowCount = 0;
@@ -828,6 +830,33 @@ GetFunctionInfoOrNull(Oid typeId, Oid accessMethodId, int16 procedureId)
 	}
 
 	return functionInfo;
+}
+
+static Node * drop_relabel_type_mutator(Node *node, void *context)
+{
+	if (node == NULL)
+		return NULL;
+	if (IsA(node, RelabelType))
+		return (Node *) ((RelabelType *) node)->arg;
+	return expression_tree_mutator(node, drop_relabel_type_mutator, context);
+}
+
+/*
+ * PrepareWhereClauseList strips RelabelType nodes (type relabelling without
+ * any conversion) from the tree, replacing them with the node they're wrapping.
+ * This is to allow CStore to filter on e.g. varchar columns where the refutation
+ * logic treats the predicate (operand has type varchar) and clause (operand
+ * has type varchar but it's relabelled to text) as operating on different nodes.
+ */
+static List * PrepareWhereClauseList(List *whereClauseList)
+{
+	List *result = NIL;
+	ListCell *qualCell = NULL;
+	foreach(qualCell, whereClauseList)
+	{
+		result = lappend(result, drop_relabel_type_mutator((Node *) lfirst(qualCell), NULL));
+	}
+	return result;
 }
 
 

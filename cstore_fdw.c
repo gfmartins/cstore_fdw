@@ -457,10 +457,11 @@ CheckSuperuserPrivilegesForCopy(const CopyStmt* copyStatement)
 /*
  * CStoreProcessCopyCommand handles COPY <cstore_table> FROM/TO ... statements.
  * It determines the copy direction and forwards execution to appropriate function.
+ * 
+ * It returns number of rows processed.
  */
-static void
-CStoreProcessCopyCommand(CopyStmt *copyStatement, const char* queryString,
-						 char *completionTag)
+static uint64
+CStoreProcessCopyCommand(CopyStmt *copyStatement, const char* queryString)
 {
 	uint64 processedCount = 0;
 
@@ -473,11 +474,7 @@ CStoreProcessCopyCommand(CopyStmt *copyStatement, const char* queryString,
 		processedCount = CopyOutCStoreTable(copyStatement, queryString);
 	}
 
-	if (completionTag != NULL)
-	{
-		snprintf(completionTag, COMPLETION_TAG_BUFSIZE, "COPY " UINT64_FORMAT,
-				 processedCount);
-	}
+	return processedCount;
 }
 
 
@@ -513,7 +510,7 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
 	 * Open and lock the relation. We acquire ShareUpdateExclusiveLock to allow
 	 * concurrent reads, but block concurrent writes.
 	 */
-	relation = heap_openrv(copyStatement->relation, ShareUpdateExclusiveLock);
+	relation = relation_openrv(copyStatement->relation, ShareUpdateExclusiveLock);
 	relationId = RelationGetRelid(relation);
 
 	/* allocate column values and nulls arrays */
@@ -588,7 +585,7 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
 	/* end read/write sessions and close the relation */
 	EndCopyFrom(copyState);
 	CStoreEndWrite(writeState);
-	heap_close(relation, ShareUpdateExclusiveLock);
+	relation_close(relation, ShareUpdateExclusiveLock);
 
 	return processedRowCount;
 }
@@ -799,7 +796,7 @@ OpenRelationsForTruncate(List *cstoreTableList)
 	foreach(relationCell, cstoreTableList)
 	{
 		RangeVar *rangeVar = (RangeVar *) lfirst(relationCell);
-		Relation relation = heap_openrv(rangeVar, AccessExclusiveLock);
+		Relation relation = relation_openrv(rangeVar, AccessExclusiveLock);
 		Oid relationId = relation->rd_id;
 		AclResult aclresult = pg_class_aclcheck(relationId, GetUserId(),
 											   ACL_TRUNCATE);
@@ -811,7 +808,7 @@ OpenRelationsForTruncate(List *cstoreTableList)
 		/* check if this relation is repeated */
 		if (list_member_oid(relationIdList, relationId))
 		{
-			heap_close(relation, AccessExclusiveLock);
+			relation_close(relation, AccessExclusiveLock);
 		}
 		else
 		{
@@ -990,7 +987,7 @@ DistributedTable(Oid relationId)
 		return false;
 	}
 
-	heapRelation = heap_open(partitionOid, AccessShareLock);
+	heapRelation = relation_open(partitionOid, AccessShareLock);
 
 	ScanKeyInit(&scanKey[0], ATTR_NUM_PARTITION_RELATION_ID, InvalidStrategy,
 				F_OIDEQ, ObjectIdGetDatum(relationId));
@@ -1542,6 +1539,8 @@ CStoreDefaultFilePath(Oid foreignTableId)
 	RelFileNode relationFileNode = relation->rd_node;
 	Oid databaseOid = relationFileNode.dbNode;
 	Oid relationFileOid = relationFileNode.relNode;
+	StringInfo cstoreFilePath = makeStringInfo();
+
 
 	relation_close(relation, AccessShareLock);
 
@@ -1553,7 +1552,6 @@ CStoreDefaultFilePath(Oid foreignTableId)
 
 	}
 
-	StringInfo cstoreFilePath = makeStringInfo();
 	appendStringInfo(cstoreFilePath, "%s/%s/%u/%u", DataDir, CSTORE_FDW_NAME,
 					 databaseOid, relationFileOid);
 
@@ -1609,7 +1607,7 @@ CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
 {
 	Path *foreignScanPath = NULL;
 	CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(foreignTableId);
-	Relation relation = heap_open(foreignTableId, AccessShareLock);
+	Relation relation = relation_open(foreignTableId, AccessShareLock);
 
 	/*
 	 * We skip reading columns that are not in query. Here we assume that all
@@ -1676,7 +1674,7 @@ CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
 #endif
 
 	add_path(baserel, foreignScanPath);
-	heap_close(relation, AccessShareLock);
+	relation_close(relation, AccessShareLock);
 }
 
 
@@ -1814,7 +1812,7 @@ ColumnList(RelOptInfo *baserel, Oid foreignTableId)
 	List *restrictInfoList = baserel->baserestrictinfo;
 	ListCell *restrictInfoCell = NULL;
 	const AttrNumber wholeRow = 0;
-	Relation relation = heap_open(foreignTableId, AccessShareLock);
+	Relation relation = relation_open(foreignTableId, AccessShareLock);
 	TupleDesc tupleDescriptor = RelationGetDescr(relation);
 
 	/* first add the columns used in joins and projections */
@@ -1895,7 +1893,7 @@ ColumnList(RelOptInfo *baserel, Oid foreignTableId)
 		}
 	}
 
-	heap_close(relation, AccessShareLock);
+	relation_close(relation, AccessShareLock);
 
 	return columnList;
 }
@@ -2301,7 +2299,7 @@ CStoreBeginForeignInsert(ModifyTableState *modifyTableState, ResultRelInfo *rela
 	Relation relation = NULL;
 
 	foreignTableOid = RelationGetRelid(relationInfo->ri_RelationDesc);
-	relation = heap_open(foreignTableOid, ShareUpdateExclusiveLock);
+	relation = relation_open(foreignTableOid, ShareUpdateExclusiveLock);
 	cstoreFdwOptions = CStoreGetOptions(foreignTableOid);
 	tupleDescriptor = RelationGetDescr(relationInfo->ri_RelationDesc);
 
@@ -2373,7 +2371,7 @@ CStoreEndForeignInsert(EState *executorState, ResultRelInfo *relationInfo)
 		Relation relation = writeState->relation;
 
 		CStoreEndWrite(writeState);
-		heap_close(relation, ShareUpdateExclusiveLock);
+		relation_close(relation, ShareUpdateExclusiveLock);
 	}
 }
 

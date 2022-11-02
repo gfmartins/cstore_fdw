@@ -24,7 +24,11 @@
 #include "access/htup_details.h"
 #include "access/reloptions.h"
 #include "access/sysattr.h"
+#if PG_VERSION_NUM >= 130000
+#include "access/heaptoast.h"
+#else
 #include "access/tuptoaster.h"
+#endif
 #include "catalog/namespace.h"
 #include "catalog/pg_foreign_table.h"
 #include "catalog/pg_namespace.h"
@@ -68,9 +72,18 @@
 #include "utils/tqual.h"
 #endif
 
+#include "cstore_version_compat.h"
+
 
 /* local functions forward declarations */
-#if PG_VERSION_NUM >= 100000
+#if PG_VERSION_NUM >= 130000
+static void CStoreProcessUtility(PlannedStmt *plannedStatement, const char *queryString,
+								 ProcessUtilityContext context,
+								 ParamListInfo paramListInfo,
+								 QueryEnvironment *queryEnvironment,
+								 DestReceiver *destReceiver,
+								 QueryCompletion *queryCompletion);
+#elif PG_VERSION_NUM >= 100000
 static void CStoreProcessUtility(PlannedStmt *plannedStatement, const char *queryString,
 								 ProcessUtilityContext context,
 								 ParamListInfo paramListInfo,
@@ -84,8 +97,7 @@ static void CStoreProcessUtility(Node *parseTree, const char *queryString,
 #endif
 static bool CopyCStoreTableStatement(CopyStmt* copyStatement);
 static void CheckSuperuserPrivilegesForCopy(const CopyStmt* copyStatement);
-static void CStoreProcessCopyCommand(CopyStmt *copyStatement, const char *queryString,
-									 char *completionTag);
+static uint64 CStoreProcessCopyCommand(CopyStmt *copyStatement, const char *queryString);
 static uint64 CopyIntoCStoreTable(const CopyStmt *copyStatement,
 								  const char *queryString);
 static uint64 CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryString);
@@ -180,7 +192,8 @@ static ProcessUtility_hook_type PreviousProcessUtilityHook = NULL;
  */
 void _PG_init(void)
 {
-	PreviousProcessUtilityHook = ProcessUtility_hook;
+	PreviousProcessUtilityHook = (ProcessUtility_hook != NULL) ?
+								 ProcessUtility_hook : standard_ProcessUtility;
 	ProcessUtility_hook = CStoreProcessUtility;
 }
 
@@ -237,7 +250,7 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 		{
 			Oid relationId = RangeVarGetRelid(createStatement->base.relation,
 											  AccessShareLock, false);
-			Relation relation = heap_open(relationId, AccessExclusiveLock);
+			Relation relation = relation_open(relationId, AccessExclusiveLock);
 
 			/*
 			 * Make sure database directory exists before creating a table.
@@ -249,7 +262,7 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 			CreateCStoreDatabaseDirectory(MyDatabaseId);
 
 			InitializeCStoreTableFile(relationId, relation);
-			heap_close(relation, AccessExclusiveLock);
+			relation_close(relation, AccessExclusiveLock);
 		}
 	}
 
@@ -264,19 +277,26 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
  * the previous utility hook or the standard utility command via macro
  * CALL_PREVIOUS_UTILITY.
  */
-#if PG_VERSION_NUM >= 100000
+#if PG_VERSION_NUM >= 130000
 static void
 CStoreProcessUtility(PlannedStmt *plannedStatement, const char *queryString,
 					 ProcessUtilityContext context,
 					 ParamListInfo paramListInfo,
 					 QueryEnvironment *queryEnvironment,
-					 DestReceiver *destReceiver, char *completionTag)
-#else
+					 DestReceiver *destReceiver, QueryCompletion *queryCompletion)
+#elif PG_VERSION_NUM >= 100000
 static void
-CStoreProcessUtility(Node * parseTree, const char *queryString,
+CStoreProcessUtility(PlannedStmt * plannedStatement, const char * queryString,
 					 ProcessUtilityContext context,
 					 ParamListInfo paramListInfo,
-					 DestReceiver *destReceiver, char *completionTag)
+					 QueryEnvironment * queryEnvironment,
+					 DestReceiver * destReceiver, char * completionTag)
+#else
+static void
+CStoreProcessUtility(Node * parseTree, const char * queryString,
+					 ProcessUtilityContext context,
+					 ParamListInfo paramListInfo,
+					 DestReceiver * destReceiver, char * completionTag)
 #endif
 {
 #if PG_VERSION_NUM >= 100000
@@ -289,12 +309,25 @@ CStoreProcessUtility(Node * parseTree, const char *queryString,
 
 		if (CopyCStoreTableStatement(copyStatement))
 		{
-			CStoreProcessCopyCommand(copyStatement, queryString, completionTag);
+			uint64 processed =
+				CStoreProcessCopyCommand(copyStatement, queryString);
+
+#if PG_VERSION_NUM >= 130000
+			if (queryCompletion)
+			{
+				SetQueryCompletion(queryCompletion, CMDTAG_COPY, processed);
+			}
+#else
+			if (completionTag != NULL)
+			{
+				snprintf(completionTag, COMPLETION_TAG_BUFSIZE,
+						 "COPY " UINT64_FORMAT, processed);
+			}
+#endif
 		}
 		else
 		{
-			CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
-								  destReceiver, completionTag);
+			CALL_PREVIOUS_UTILITY();
 		}
 	}
 	else if (nodeTag(parseTree) == T_TruncateStmt)

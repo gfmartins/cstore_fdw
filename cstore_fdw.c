@@ -343,8 +343,7 @@ CStoreProcessUtility(Node * parseTree, const char * queryString,
 		{
 			truncateStatement->relations = otherTablesList;
 
-			CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
-								  destReceiver, completionTag);
+			CALL_PREVIOUS_UTILITY();
                         /* restore the former relation list. Our
                          * replacement could be freed but still needed
                          * in a cached plan. A truncate can be cached
@@ -364,8 +363,7 @@ CStoreProcessUtility(Node * parseTree, const char * queryString,
 	{
 		AlterTableStmt *alterTable = (AlterTableStmt *) parseTree;
 		CStoreProcessAlterTableCommand(alterTable);
-		CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
-							  destReceiver, completionTag);
+		CALL_PREVIOUS_UTILITY();
 	}
 	else if (nodeTag(parseTree) == T_DropdbStmt)
 	{
@@ -374,8 +372,7 @@ CStoreProcessUtility(Node * parseTree, const char * queryString,
 		Oid databaseOid = get_database_oid(dropDdStmt->dbname, missingOk);
 
 		/* let postgres handle error checking and dropping of the database */
-		CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
-							  destReceiver, completionTag);
+		CALL_PREVIOUS_UTILITY();
 
 		if (databaseOid != InvalidOid)
 		{
@@ -385,8 +382,7 @@ CStoreProcessUtility(Node * parseTree, const char * queryString,
 	/* handle other utility statements */
 	else
 	{
-		CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
-							  destReceiver, completionTag);
+		CALL_PREVIOUS_UTILITY();
 	}
 }
 
